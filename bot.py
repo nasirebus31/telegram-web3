@@ -7,7 +7,7 @@ import locale
 # Set number formatting locale (Indonesian)
 locale.setlocale(locale.LC_ALL, 'id_ID.UTF-8')
 
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = os.getenv("TOKEN")
 
 # 🔗 Telegram web links you want to pull text from
 LINKS = {
