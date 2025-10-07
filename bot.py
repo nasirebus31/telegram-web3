@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 
 # --- Konfigurasi Awal ---
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TOKEN = "8029384081:AAEra3DrrXFjp0tZ-nADvqNEkS0O5OZJ41w"
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 
 # Dibuat None agar bisa diinisialisasi nanti
