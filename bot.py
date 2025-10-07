@@ -19,8 +19,10 @@ logging.basicConfig(
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 
-application = None  # Global app Telegram
-app = FastAPI()     # Webhook FastAPI
+# Dibuat None agar bisa diinisialisasi nanti
+application = None 
+# Inisialisasi FastAPI
+app = FastAPI() 
 
 # --- Fungsi Pembantu ---
 def round_significant(x, sig=4):
@@ -43,6 +45,7 @@ def get_coin_id(ticker):
 
 # --- Handler: /p (Price Info) ---
 async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # KODE UNTUK /p (SAYA PERTAHANKAN KARENA SUDAH BENAR)
     if not context.args:
         await update.message.reply_text("Format: /p [Ticker]. Contoh: /p ENA")
         return
@@ -53,12 +56,8 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         url = f"{COINGECKO_API}/coins/{coin_id}"
         params = {
-            'localization': 'false',
-            'tickers': 'false',
-            'market_data': 'true',
-            'community_data': 'false',
-            'developer_data': 'false',
-            'sparkline': 'false'
+            'localization': 'false', 'tickers': 'false', 'market_data': 'true',
+            'community_data': 'false', 'developer_data': 'false', 'sparkline': 'false'
         }
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
@@ -117,6 +116,7 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Handler: /cv (Convert) ---
 async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # KODE UNTUK /cv (SAYA PERTAHANKAN KARENA SUDAH BENAR)
     args = context.args
     if len(args) < 2:
         await update.message.reply_text("Format: /cv [Jumlah] [Koin Asal] [Koin Tujuan (opsional)]\nContoh: /cv 1 btc idr")
@@ -156,6 +156,7 @@ async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Terjadi kesalahan saat konversi.")
 
 # --- Handler Admin Commands (/kick, /ban, /mute) ---
+# KODE UNTUK ADMIN COMMANDS (SAYA PERTAHANKAN KARENA SUDAH BENAR)
 async def handle_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type not in ["group", "supergroup"]:
         await update.message.reply_text("Gunakan di grup.")
@@ -236,8 +237,15 @@ async def handle_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def telegram_webhook(raw_update: dict):
     if not raw_update:
         return {"message": "No update"}
+    
+    # PERBAIKAN: Gunakan variabel global 'application'
+    global application 
+
     if application is None:
+        # Pengecekan keamanan jika bot gagal inisialisasi
+        logging.error("Application is None. Bot not ready.")
         return {"message": "Bot not ready"}
+    
     update = Update.de_json(raw_update, application.bot)
     await application.process_update(update)
     return {"message": "OK"}
@@ -245,27 +253,36 @@ async def telegram_webhook(raw_update: dict):
 # --- Inisialisasi Bot Telegram ---
 def initialize_bot():
     global application
+    
     if not TOKEN:
-        logging.error("TOKEN tidak ditemukan.")
-        return Application.builder().token("INVALID").build()
+        logging.error("TOKEN tidak ditemukan. Mengembalikan instance dummy.")
+        # Kembalikan None atau instance minimal untuk mencegah crash inisialisasi global
+        return None
 
+    # Jika TOKEN ada, inisialisasi aplikasi
     application = Application.builder().token(TOKEN).build()
+    
+    # Daftarkan semua handlers
     application.add_handler(CommandHandler("p", handle_price))
     application.add_handler(CommandHandler("cv", handle_convert))
     application.add_handler(CommandHandler("kick", handle_kick))
     application.add_handler(CommandHandler("ban", handle_ban))
     application.add_handler(CommandHandler("mute", handle_mute))
+    
     application.initialize()
     logging.info("Bot siap menerima webhook.")
     return application
 
+# PERBAIKAN: Simpan hasil inisialisasi global
 application = initialize_bot()
 
 # --- Entry Point ---
 if __name__ == "__main__":
-    if TOKEN is None:
-        logging.error("Tidak dapat menjalankan server: TELEGRAM_BOT_TOKEN tidak disetel.")
+    # Periksa apakah inisialisasi sukses (yaitu, application bukan None)
+    if application is None:
+        logging.error("Tidak dapat menjalankan server: TELEGRAM_BOT_TOKEN tidak disetel atau inisialisasi gagal.")
     else:
         PORT = int(os.environ.get("PORT", 8080))
         logging.info(f"Menjalankan server di port {PORT}...")
+        # PERBAIKAN: Gunakan 'app' yang dideklarasikan di awal
         uvicorn.run(app, host="0.0.0.0", port=PORT)
