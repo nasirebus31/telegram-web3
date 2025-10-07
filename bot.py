@@ -1,41 +1,55 @@
 import logging
 import requests
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+import os
+import uvicorn
 from math import log10, floor
 
-# Konfigurasi Logging
+# Import dari library python-telegram-bot dan FastAPI
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from fastapi import FastAPI
+
+# --- Konfigurasi Awal ---
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-# Atur TOKEN bot Telegram Anda di sini
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN" 
+
+# Ambil Token dari Environment Variable (Wajib untuk Hosting seperti Choreo)
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") 
+if not TOKEN:
+    logging.error("TELEGRAM_BOT_TOKEN environment variable is missing. Bot cannot start.")
 
 # URL Dasar CoinGecko API (Versi Gratis)
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 
+# Inisialisasi Aplikasi Telegram secara global untuk digunakan oleh Webhook
+application = Application.builder().token(TOKEN).build()
+# Inisialisasi FastAPI untuk menerima Webhook
+app = FastAPI()
+
+
 # --- Fungsi Pembantu ---
 
-# Untuk membulatkan angka desimal, agar tidak terlalu panjang
 def round_significant(x, sig=4):
     """Membulatkan angka ke sejumlah angka penting tertentu."""
     if x == 0:
         return 0
+    # Mengatasi kasus float kecil
+    if abs(x) < 1e-10:
+        return f"{x:.8f}"
+    
     return round(x, sig - int(floor(log10(abs(x)))) - 1)
 
 def get_coin_id(ticker):
-    """Fungsi sederhana untuk memetakan ticker/simbol ke CoinGecko ID.
-    API CoinGecko menggunakan ID (misal: 'bitcoin') bukan ticker (misal: 'BTC').
-    Untuk bot yang lebih kompleks, gunakan endpoint /coins/list.
-    """
-    # Mengambil ID untuk IDR, BTC, dan USDT
+    """Fungsi sederhana untuk memetakan ticker/simbol ke CoinGecko ID."""
+    # Mapping IDR, BTC, ETH, USDT
     if ticker.lower() == 'idr': return 'idr'
     if ticker.lower() == 'btc': return 'bitcoin'
     if ticker.lower() == 'eth': return 'ethereum'
     if ticker.lower() == 'usdt': return 'tether'
     
     # Asumsi: Untuk ticker lain, CoinGecko ID adalah nama lowercase-nya.
-    # Contoh: 'ENA' -> 'ena'
     return ticker.lower()
 
 # --- Handler Perintah /p (Harga Kripto Detail) ---
@@ -47,13 +61,13 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Format: /p [Ticker Kripto]. Contoh: /p ENA")
         return
 
-    # Ambil ticker dari argumen
     ticker = context.args[0].upper()
     coin_id = get_coin_id(ticker)
 
     try:
         # Panggil CoinGecko API: /coins/{id}
         url = f"{COINGECKO_API}/coins/{coin_id}"
+        # Minta data market spesifik yang dibutuhkan
         params = {
             'localization': 'false',
             'tickers': 'false',
@@ -62,50 +76,43 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             'developer_data': 'false',
             'sparkline': 'false'
         }
-        response = requests.get(url, params=params)
-        response.raise_for_status() # Cek error HTTP
+        response = requests.get(url, params=params, timeout=10) # Tambahkan timeout
+        response.raise_for_status()
         data = response.json()
         
-        # Ambil data yang dibutuhkan
         market_data = data.get('market_data', {})
         current_price = market_data.get('current_price', {})
         
-        # Cek apakah data tersedia
         if not current_price:
-            await update.message.reply_text(f"❌ Data untuk {ticker} tidak ditemukan.")
+            await update.message.reply_text(f"❌ Data untuk {ticker} tidak ditemukan. Cek apakah ticker tersebut benar di CoinGecko.")
             return
 
         # --- Formatting Data ---
         
-        # Harga
         price_usd = current_price.get('usd', 0)
         price_btc = current_price.get('btc', 0)
         price_eth = current_price.get('eth', 0)
         
-        # Perubahan
         p_1h = market_data.get('price_change_percentage_1h_in_currency', {}).get('usd', 0)
         p_24h = market_data.get('price_change_percentage_24h', 0)
         p_7d = market_data.get('price_change_percentage_7d', 0)
         
-        # High/Low
         high_24h = market_data.get('high_24h', {}).get('usd', 0)
         low_24h = market_data.get('low_24h', {}).get('usd', 0)
         
-        # Cap
         market_cap_usd = market_data.get('market_cap', {}).get('usd', 0)
         fdv_usd = market_data.get('fully_diluted_valuation', {}).get('usd', 0)
         total_volume_usd = market_data.get('total_volume', {}).get('usd', 0)
         rank = market_data.get('market_cap_rank', 'N/A')
 
-        # Fungsi emoji
         def get_emoji(percentage):
-            if percentage is None: return ''
+            if percentage is None or percentage == 0: return ''
             if percentage >= 5: return '🍻'
             if percentage > 0: return '😀'
             if percentage < 0: return '😔'
             return ''
 
-        # Format output string
+        # Format output string sesuai permintaan
         output = (
             f"*{ticker}*\n"
             f"${round_significant(price_usd, 4):,}\n"
@@ -122,12 +129,15 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         await update.message.reply_text(output, parse_mode="Markdown")
         
-    except requests.exceptions.RequestException as e:
-        logging.error(f"CoinGecko API Error: {e}")
-        await update.message.reply_text(f"Terjadi kesalahan saat mengambil data untuk {ticker}. Coba lagi.")
+    except requests.exceptions.HTTPError as e:
+        if response.status_code == 404:
+            await update.message.reply_text(f"❌ Koin dengan ticker '{ticker}' tidak ditemukan.")
+        else:
+            logging.error(f"CoinGecko API HTTP Error: {e}")
+            await update.message.reply_text("Terjadi kesalahan API. Coba lagi.")
     except Exception as e:
         logging.error(f"Internal Error: {e}")
-        await update.message.reply_text("Terjadi kesalahan internal. Coba periksa kembali format input Anda.")
+        await update.message.reply_text("Terjadi kesalahan internal. Coba periksa format input Anda.")
 
 # --- Handler Perintah /cv (Konversi Kripto) ---
 
@@ -135,7 +145,6 @@ async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Mengkonversi nilai kripto."""
 
     args = context.args
-    # Format: /cv [jumlah] [koin_asal] [koin_tujuan/idr]
     if len(args) < 2:
         await update.message.reply_text("Format: /cv [Jumlah] [Koin Asal] [Koin Tujuan (opsional, default: IDR)]\nContoh: /cv 1 btc idr atau /cv 1 btc usdt")
         return
@@ -143,7 +152,7 @@ async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         amount = float(args[0])
         from_ticker = args[1].lower()
-        to_ticker = args[2].lower() if len(args) > 2 else 'idr' # Default ke IDR
+        to_ticker = args[2].lower() if len(args) > 2 else 'idr'
         
     except ValueError:
         await update.message.reply_text("Jumlah harus berupa angka.")
@@ -152,7 +161,6 @@ async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     from_id = get_coin_id(from_ticker)
     to_id = get_coin_id(to_ticker)
 
-    # API CoinGecko menggunakan simple/price untuk konversi cepat
     url = f"{COINGECKO_API}/simple/price"
     params = {
         'ids': from_id,
@@ -160,11 +168,10 @@ async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     }
     
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
 
-        # Ambil harga 1 koin asal dalam koin tujuan
         price = data.get(from_id, {}).get(to_id, None)
 
         if price is None:
@@ -176,13 +183,16 @@ async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Formatting hasil
         if to_ticker == 'idr':
             result_formatted = f"Rp{result:,.0f}"
+            amount_formatted = f"{amount:,.4f}"
         elif result < 1:
             result_formatted = f"{round_significant(result, 6)}"
+            amount_formatted = f"{amount:,.4f}"
         else:
             result_formatted = f"{result:,.2f}"
+            amount_formatted = f"{amount:,.2f}"
 
         output = (
-            f"*{amount:,.4f} {from_ticker.upper()}* sama dengan:\n"
+            f"*{amount_formatted} {from_ticker.upper()}* sama dengan:\n"
             f"*{result_formatted} {to_ticker.upper()}*"
         )
         
@@ -192,20 +202,54 @@ async def handle_convert(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logging.error(f"CoinGecko API Error: {e}")
         await update.message.reply_text("Terjadi kesalahan saat mengambil data konversi. Coba lagi.")
 
-# --- Main Function ---
+# --- Fungsi Webhook untuk FastAPI ---
 
-def main() -> None:
-    """Menjalankan bot."""
-    # Buat Aplikasi
-    application = Application.builder().token(TOKEN).build()
+# Fungsi untuk menerima POST request dari Telegram
+@app.post("/")
+async def telegram_webhook(raw_update: dict):
+    """Menerima dan memproses Webhook dari Telegram."""
+    if not raw_update:
+        return {"message": "No update received"}
+        
+    # Mengkonversi dictionary mentah menjadi objek Update
+    update = Update.de_json(raw_update, application.bot)
+    
+    # Memasukkan Update ke dalam antrian untuk diproses oleh Handlers
+    await application.process_update(update)
+    
+    return {"message": "OK"}
 
+
+# --- Fungsi Utama Bot & Server Startup ---
+
+def initialize_bot():
+    """Menginisialisasi Handlers sebelum server Webhook dijalankan."""
+    
+    if not TOKEN:
+        logging.error("Inisialisasi bot gagal: TOKEN tidak ditemukan.")
+        return False
+    
     # Daftarkan Handlers Perintah
     application.add_handler(CommandHandler("p", handle_price))
     application.add_handler(CommandHandler("cv", handle_convert))
+    
+    # Inisialisasi proses update (harus dilakukan sebelum menerima Webhook)
+    # Ini memastikan semua handlers dimuat
+    application.initialize()
+    logging.info("Handlers Telegram dimuat dan bot siap menerima Webhook.")
+    return True
 
-    # Mulai Bot
-    logging.info("Bot sedang berjalan...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+# Jalankan inisialisasi handlers
+if not initialize_bot():
+    logging.error("Gagal memulai bot.")
+
 
 if __name__ == "__main__":
-    main()
+    # Fungsi main hanya digunakan saat dijalankan secara lokal (opsional)
+    # Di Choreo, server Webhook (uvicorn) akan dijalankan melalui Procfile
+    
+    PORT = int(os.environ.get("PORT", 8080))
+    logging.info(f"Menjalankan server Uvicorn di port {PORT}...")
+    
+    # Uvicorn harus dijalankan melalui Procfile di Choreo, tapi ini adalah fallback lokal
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
